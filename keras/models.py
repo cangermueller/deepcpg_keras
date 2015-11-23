@@ -15,6 +15,7 @@ from . import callbacks as cbks
 from .utils.layer_utils import container_from_config
 from .utils.generic_utils import Progbar, printv
 from .layers import containers
+from theano.ifelse import ifelse
 
 
 def standardize_y(y):
@@ -78,10 +79,11 @@ def weighted_objective(fn):
         weighted = filtered_weights * obj_output
         if mask is None:
             # Instead of calling mean() here, we divide by the sum of filtered_weights.
-            return weighted.sum() / filtered_weights.sum()
+            weights_sum = filtered_weights.sum()
         else:
             filtered_mask = mask[weights.nonzero()[:-1]]
-            return weighted.sum() / (filtered_mask * filtered_weights).sum()
+            weights_sum = (filtered_mask * filtered_weights).sum()
+        return ifelse(T.eq(weights_sum, 0), 0.0, weighted.sum() / weights_sum)
     return weighted
 
 
@@ -203,6 +205,9 @@ class Model(object):
             batches = make_batches(nb_train_sample, batch_size)
             for batch_index, (batch_start, batch_end) in enumerate(batches):
                 batch_ids = index_array[batch_start:batch_end]
+                batch_ids = batch_ids.copy()
+                batch_ids.sort()
+                batch_ids = list(batch_ids)
                 try:
                     ins_batch = slice_X(ins, batch_ids)
                 except TypeError as err:
@@ -252,6 +257,9 @@ class Model(object):
         index_array = np.arange(nb_sample)
         for batch_index, (batch_start, batch_end) in enumerate(batches):
             batch_ids = index_array[batch_start:batch_end]
+            batch_ids = batch_ids.copy()
+            batch_ids.sort()
+            batch_ids = list(batch_ids)
             ins_batch = slice_X(ins, batch_ids)
 
             batch_outs = f(*ins_batch)
@@ -280,6 +288,9 @@ class Model(object):
         index_array = np.arange(nb_sample)
         for batch_index, (batch_start, batch_end) in enumerate(batches):
             batch_ids = index_array[batch_start:batch_end]
+            batch_ids = batch_ids.copy()
+            batch_ids.sort()
+            batch_ids = list(batch_ids)
             ins_batch = slice_X(ins, batch_ids)
 
             batch_outs = f(*ins_batch)
@@ -645,7 +656,8 @@ class Graph(Model, containers.Graph):
         return self._predict(*ins)
 
     def fit(self, data, batch_size=128, nb_epoch=100, verbose=1, callbacks=[],
-            validation_split=0., validation_data=None, shuffle=True, class_weight={}, sample_weight={}):
+            validation_split=0., validation_data=None, shuffle=True, class_weight={}, sample_weight={},
+            sample_weight_val={}):
         X = [data[name] for name in self.input_order]
         y = [standardize_y(data[name]) for name in self.output_order]
 
@@ -659,10 +671,10 @@ class Graph(Model, containers.Graph):
             val_f = self._test
         if validation_data:
             # can't use sample weights with validation data at this point
-            y_val = [standardize_y(data[name]) for name in self.output_order]
-            sample_weight = [standardize_weights(y_val[i]) for i in range(len(y_val))]
-            val_ins = [validation_data[name] for name in self.input_order] + [standardize_y(validation_data[name]) for name in self.output_order] + sample_weight
-
+            X_val = [validation_data[name] for name in self.input_order]
+            y_val = [standardize_y(validation_data[name]) for name in self.output_order]
+            sample_weight_list_val = [standardize_weights(y_val[i],
+                                                    sample_weight=sample_weight_val.get(self.output_order[i])) for i in range(len(self.output_order))]
         elif 0 < validation_split < 1:
             split_at = int(len(X[0]) * (1 - validation_split))
             X, X_val = (slice_X(X, 0, split_at), slice_X(X, split_at))
@@ -677,7 +689,11 @@ class Graph(Model, containers.Graph):
         sample_weight_list = [standardize_weights(y[i],
                                                   sample_weight=sample_weight_list[i],
                                                   class_weight=class_weight_list[i]) for i in range(len(self.output_order))]
+        sample_weight_list_val = [standardize_weights(y_val[i],
+                                                    sample_weight=sample_weight_list_val[i],
+                                                    class_weight=class_weight_list[i]) for i in range(len(self.output_order))]
         ins = X + y + sample_weight_list
+        val_ins = X_val + y_val + sample_weight_list_val
         history = self._fit(f, ins, out_labels=out_labels, batch_size=batch_size, nb_epoch=nb_epoch,
                             verbose=verbose, callbacks=callbacks,
                             val_f=val_f, val_ins=val_ins,
@@ -685,10 +701,11 @@ class Graph(Model, containers.Graph):
         return history
 
     def evaluate(self, data, batch_size=128, verbose=0, sample_weight={}):
-        sample_weight = [standardize_weights(data[name],
-                                             sample_weight=sample_weight.get(name)) for name in self.output_order]
-
-        ins = [data[name] for name in self.input_order] + [standardize_y(data[name]) for name in self.output_order] + sample_weight
+        X = [data[name] for name in self.input_order]
+        y = [standardize_y(data[name]) for name in self.output_order]
+        sample_weight = [standardize_weights(y[i],
+                                             sample_weight=sample_weight.get(name)) for i, name in enumerate(self.output_order)]
+        ins = X + y + sample_weight
         outs = self._test_loop(self._test, ins, batch_size, verbose)
         return outs[0]
 
