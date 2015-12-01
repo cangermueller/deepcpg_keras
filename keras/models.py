@@ -694,7 +694,6 @@ class Graph(Model, containers.Graph):
                                                   sample_weight=sample_weight_list[i],
                                                   class_weight=class_weight_list[i]) for i in range(len(self.output_order))]
         ins = X + y + sample_weight_list
-        import ipdb; ipdb.set_trace()
         history = self._fit(f, ins, out_labels=out_labels, batch_size=batch_size, nb_epoch=nb_epoch,
                             verbose=verbose, callbacks=callbacks,
                             val_f=val_f, val_ins=val_ins,
