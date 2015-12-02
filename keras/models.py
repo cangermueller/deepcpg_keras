@@ -126,12 +126,14 @@ def model_from_json(json_string, custom_objects={}):
 
 def model_from_config(config, custom_objects={}):
     model_name = config.get('name')
-    if model_name not in {'Graph', 'Sequential'}:
+    if model_name not in {'CpgGraph', 'Graph', 'Sequential'}:
         raise Exception('Unrecognized model:', model_name)
 
     # Create a container then set class to appropriate model
     model = container_from_config(config, custom_objects=custom_objects)
-    if model_name == 'Graph':
+    if model_name == 'CpgGraph':
+        model.__class__ = CpgGraph
+    elif model_name == 'Graph':
         model.__class__ = Graph
     elif model_name == 'Sequential':
         model.__class__ = Sequential
@@ -148,7 +150,7 @@ def model_from_config(config, custom_objects={}):
 
         if model_name == 'Sequential':
             model.compile(loss=loss, optimizer=optimizer, class_mode=class_mode, theano_mode=theano_mode)
-        elif model_name == 'Graph':
+        elif model_name in ['Graph', 'CpgGraph']:
             model.compile(loss=loss, optimizer=optimizer, theano_mode=theano_mode)
 
     return model
@@ -750,3 +752,257 @@ class Graph(Model, containers.Graph):
         weights = [g['param_{}'.format(p)] for p in range(g.attrs['nb_params'])]
         self.set_weights(weights)
         f.close()
+
+
+class CpgGraph(Graph):
+
+    def compile(self, optimizer, loss, theano_mode=None, dropout=False):
+        # loss is a dictionary mapping output name to loss functions
+        ys = []
+        ys_train = []
+        ys_test = []
+        weights = []
+        train_loss = 0.
+        test_loss = 0.
+        for output_name in self.output_order:
+            loss_fn = loss[output_name]
+            output = self.outputs[output_name]
+            y_train = output.get_output(True)
+            y_test = output.get_output(False)
+            y = T.zeros_like(y_test)
+            ys.append(y)
+            ys_train.append(y_train)
+            ys_test.append(y_test)
+
+            if hasattr(output, "get_output_mask"):
+                mask = output.get_output_mask()
+            else:
+                mask = None
+
+            weight = T.ones_like(y_test)
+            weights.append(weight)
+            weighted_loss = weighted_objective(objectives.get(loss_fn))
+            train_loss += weighted_loss(y, y_train, weight, mask)
+            test_loss += weighted_loss(y, y_test, weight, mask)
+
+        train_loss.name = 'train_loss'
+        test_loss.name = 'test_loss'
+
+        ins = [self.inputs[name].input for name in self.input_order]
+        train_ins = ins + ys + weights
+        test_ins = ins + ys + weights
+
+        for r in self.regularizers:
+            train_loss = r(train_loss)
+        self.optimizer = optimizers.get(optimizer)
+        updates = self.optimizer.get_updates(self.params, self.constraints, train_loss)
+        updates += self.updates
+        self.theano_mode = theano_mode
+        self.loss = loss
+
+        self._train = theano.function(train_ins, train_loss, updates=updates,
+                                      allow_input_downcast=True, mode=theano_mode)
+        self._test = theano.function(test_ins, test_loss,
+                                     allow_input_downcast=True, mode=theano_mode)
+        self._predict = theano.function(inputs=ins, outputs=ys_test,
+                                        allow_input_downcast=True, mode=theano_mode)
+        if dropout:
+            self._predict_dropout = theano.function(inputs=ins, outputs=ys_train,
+                                                allow_input_downcast=True, mode=theano_mode)
+
+    def _fit(self, f, ins, out_labels=[], batch_size=128, nb_epoch=100, verbose=1, callbacks=[],
+             val_f=None, val_ins=None, shuffle=True, metrics=[]):
+        '''
+            Abstract fit function for f(*ins). Assume that f returns a list, labelled by out_labels.
+        '''
+
+        shuffle = False
+        ymap = dict()
+        wmap = dict()
+        for i, o in enumerate(self.output_order):
+            ymap[o] = 1 + i
+            wmap[o] = 1 + len(self.output_order) + i
+
+        do_validation = False
+        if val_f and val_ins:
+            do_validation = True
+            if verbose:
+                print("Train on %d samples, validate on %d samples" % (len(ins[0]), len(val_ins[0])))
+
+        nb_train_sample = len(ins[0])
+        index_array = np.arange(nb_train_sample)
+
+        history = cbks.History()
+        if verbose:
+            callbacks = [history, cbks.BaseLogger()] + callbacks
+        else:
+            callbacks = [history] + callbacks
+        callbacks = cbks.CallbackList(callbacks)
+
+        callbacks._set_model(self)
+        callbacks._set_params({
+            'batch_size': batch_size,
+            'nb_epoch': nb_epoch,
+            'nb_sample': nb_train_sample,
+            'verbose': verbose,
+            'do_validation': do_validation,
+            'metrics': metrics,
+        })
+        callbacks.on_train_begin()
+
+        self.stop_training = False
+        for epoch in range(nb_epoch):
+            callbacks.on_epoch_begin(epoch)
+            if False or shuffle == 'batch':
+                index_array = batch_shuffle(index_array, batch_size)
+            elif False or shuffle:
+                np.random.shuffle(index_array)
+
+            batches = make_batches(nb_train_sample, batch_size)
+            for batch_index, (batch_start, batch_end) in enumerate(batches):
+                batch_ids = index_array[batch_start:batch_end]
+                batch_ids = batch_ids.copy()
+                batch_ids.sort()
+                batch_ids = list(batch_ids)
+                try:
+                    ins_batch = slice_X(ins, batch_ids)
+                except TypeError:
+                    raise Exception('TypeError while preparing batch. \
+                        If using HDF5 input data, pass shuffle="batch".\n')
+
+                #  for o in self.output_order:
+                    #  y = ins_batch[ymap[o]]
+                    #  w = ins_batch[wmap[o]]
+                    #  t = y == -1
+                    #  ww = w[:]
+                    #  assert np.all(ww[y == -1] == 0)
+
+                #  if val_ins is not None:
+                    #  val_batch = slice_X(val_ins, batch_ids)
+                    #  y = val_batch[ymap[o]]
+                    #  w = val_batch[wmap[o]]
+                    #  t = y == -1
+                    #  ww = w[:]
+                    #  assert np.all(ww[y == -1] == 0)
+
+                batch_logs = {}
+                batch_logs['batch'] = batch_index
+                batch_logs['size'] = len(batch_ids)
+                callbacks.on_batch_begin(batch_index, batch_logs)
+                outs = f(*ins_batch)
+                if type(outs) != list:
+                    outs = [outs]
+                for l, o in zip(out_labels, outs):
+                    batch_logs[l] = o
+
+                callbacks.on_batch_end(batch_index, batch_logs)
+
+                epoch_logs = {}
+                if True or batch_index == len(batches) - 1:  # last batch
+                    # validation
+                    if do_validation:
+                        # replace with self._evaluate
+                        val_outs = self._test_loop(val_f, val_ins, batch_size=batch_size, verbose=0)
+                        if type(val_outs) != list:
+                            val_outs = [val_outs]
+                        # same labels assumed
+                        for l, o in zip(out_labels, val_outs):
+                            epoch_logs['val_' + l] = o
+
+            callbacks.on_epoch_end(epoch, epoch_logs)
+            if self.stop_training:
+                break
+
+        callbacks.on_train_end()
+        return history
+
+    def _predict_loop(self, f, ins, batch_size=128, verbose=0,
+                      callbacks=[]):
+        '''
+            Abstract method to loop over some data in batches.
+        '''
+        nb_sample = len(ins[0])
+        outs = []
+        if verbose == 1:
+            progbar = Progbar(target=nb_sample)
+        batches = make_batches(nb_sample, batch_size)
+        index_array = np.arange(nb_sample)
+        for batch_index, (batch_start, batch_end) in enumerate(batches):
+            for callback in callbacks:
+                callback(batch_index, len(batches))
+            batch_ids = index_array[batch_start:batch_end]
+            batch_ids = batch_ids.copy()
+            batch_ids.sort()
+            batch_ids = list(batch_ids)
+            ins_batch = slice_X(ins, batch_ids)
+
+            batch_outs = f(*ins_batch)
+            if type(batch_outs) != list:
+                batch_outs = [batch_outs]
+            if batch_index == 0:
+                for batch_out in batch_outs:
+                    shape = (nb_sample,) + batch_out.shape[1:]
+                    outs.append(np.zeros(shape))
+
+            for i, batch_out in enumerate(batch_outs):
+                outs[i][batch_start:batch_end] = batch_out
+            if verbose == 1:
+                progbar.update(batch_end)
+        return outs
+
+
+    def _standardize_data(self, data, sample_weight=None, class_weight=None):
+        X = [data[name] for name in self.input_order]
+        y = []
+        sample_weight_list = []
+        for name in self.output_order:
+            _y = data[name]
+            y.append(_y)
+            cweights = class_weight.get(name)
+            sweights = sample_weight.get(name)
+            sweights = standardize_weights(_y, sweights, cweights)
+            sample_weight_list.append(sweights)
+        ins = X + y + sample_weight_list
+        return ins
+
+    def fit(self, data, batch_size=128, nb_epoch=100, verbose=1, callbacks=[],
+            validation_split=0., val_data=None, shuffle=True,
+            class_weight={}, sample_weight={},
+            val_sample_weight={}, val_class_weight={}):
+
+        f = self._train
+        ins = self._standardize_data(data, sample_weight, class_weight)
+
+        val_f = None
+        val_ins = None
+        if val_data is not None:
+            val_f = self._test
+            val_ins = self._standardize_data(val_data, val_sample_weight,
+                                             val_class_weight)
+
+        out_labels = ['loss']
+        metrics = ['loss', 'val_loss']
+
+        history = self._fit(f, ins, out_labels=out_labels,
+                            batch_size=batch_size, nb_epoch=nb_epoch,
+                            verbose=verbose, callbacks=callbacks,
+                            val_f=val_f, val_ins=val_ins,
+                            shuffle=shuffle, metrics=metrics)
+        return history
+
+    def evaluate(self, data, batch_size=128, verbose=0,
+                 sample_weight={}, class_weight={}):
+        ins = self._standardize_data(data, sample_weight, class_weight)
+        outs = self._test_loop(self._test, ins, batch_size, verbose)
+        return outs[0]
+
+    def predict(self, data, batch_size=128, verbose=0, callbacks=[],
+                dropout=False):
+        ins = [data[name] for name in self.input_order]
+        if dropout:
+            f = self._predict_dropout
+        else:
+            f = self._predict
+        outs = self._predict_loop(f, ins, batch_size, verbose,
+                                  callbacks=callbacks)
+        return dict(zip(self.output_order, outs))

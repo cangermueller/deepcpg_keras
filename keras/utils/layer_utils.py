@@ -44,7 +44,7 @@ def container_from_config(original_layer_dict, custom_objects={}):
         seq_layer = containers.Sequential(layer_list)
         return seq_layer
 
-    elif name == 'Graph':
+    elif name in ['CpgGraph', 'Graph']:
         graph_layer = containers.Graph()
         inputs = layer_dict.get('input_config')
 
