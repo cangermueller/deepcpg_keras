@@ -811,10 +811,13 @@ class CpgGraph(Graph):
                                                 allow_input_downcast=True, mode=theano_mode)
 
     def _fit(self, f, ins, out_labels=[], batch_size=128, nb_epoch=100, verbose=1, callbacks=[],
-             val_f=None, val_ins=None, shuffle=True, metrics=[]):
+             val_f=None, val_ins=None, shuffle=True, metrics=[], logger=None):
         '''
             Abstract fit function for f(*ins). Assume that f returns a list, labelled by out_labels.
         '''
+        def log(x):
+            if logger is not None:
+                logger(x)
 
         shuffle = False
         ymap = dict()
@@ -851,7 +854,9 @@ class CpgGraph(Graph):
         callbacks.on_train_begin()
 
         self.stop_training = False
+
         for epoch in range(nb_epoch):
+            log('Epoch (%d/%d)' % (epoch + 1, nb_epoch))
             callbacks.on_epoch_begin(epoch)
             if False or shuffle == 'batch':
                 index_array = batch_shuffle(index_array, batch_size)
@@ -859,37 +864,28 @@ class CpgGraph(Graph):
                 np.random.shuffle(index_array)
 
             batches = make_batches(nb_train_sample, batch_size)
+
             for batch_index, (batch_start, batch_end) in enumerate(batches):
                 batch_ids = index_array[batch_start:batch_end]
                 batch_ids = batch_ids.copy()
                 batch_ids.sort()
                 batch_ids = list(batch_ids)
+                log('Batch (%d/%d)' % (batch_index + 1, len(batches)))
                 try:
+                    log('Slice start')
                     ins_batch = slice_X(ins, batch_ids)
+                    log('Slice end')
                 except TypeError:
                     raise Exception('TypeError while preparing batch. \
                         If using HDF5 input data, pass shuffle="batch".\n')
-
-                #  for o in self.output_order:
-                    #  y = ins_batch[ymap[o]]
-                    #  w = ins_batch[wmap[o]]
-                    #  t = y == -1
-                    #  ww = w[:]
-                    #  assert np.all(ww[y == -1] == 0)
-
-                #  if val_ins is not None:
-                    #  val_batch = slice_X(val_ins, batch_ids)
-                    #  y = val_batch[ymap[o]]
-                    #  w = val_batch[wmap[o]]
-                    #  t = y == -1
-                    #  ww = w[:]
-                    #  assert np.all(ww[y == -1] == 0)
 
                 batch_logs = {}
                 batch_logs['batch'] = batch_index
                 batch_logs['size'] = len(batch_ids)
                 callbacks.on_batch_begin(batch_index, batch_logs)
+                log('Fit start')
                 outs = f(*ins_batch)
+                log('Fit end')
                 if type(outs) != list:
                     outs = [outs]
                 for l, o in zip(out_labels, outs):
@@ -898,11 +894,13 @@ class CpgGraph(Graph):
                 callbacks.on_batch_end(batch_index, batch_logs)
 
                 epoch_logs = {}
-                if True or batch_index == len(batches) - 1:  # last batch
+                if batch_index == len(batches) - 1:  # last batch
                     # validation
                     if do_validation:
                         # replace with self._evaluate
+                        log('Validate start')
                         val_outs = self._test_loop(val_f, val_ins, batch_size=batch_size, verbose=0)
+                        log('Validate end')
                         if type(val_outs) != list:
                             val_outs = [val_outs]
                         # same labels assumed
@@ -968,7 +966,7 @@ class CpgGraph(Graph):
     def fit(self, data, batch_size=128, nb_epoch=100, verbose=1, callbacks=[],
             validation_split=0., val_data=None, shuffle=True,
             class_weight={}, sample_weight={},
-            val_sample_weight={}, val_class_weight={}):
+            val_sample_weight={}, val_class_weight={}, *args, **kwargs):
 
         f = self._train
         ins = self._standardize_data(data, sample_weight, class_weight)
@@ -987,8 +985,12 @@ class CpgGraph(Graph):
                             batch_size=batch_size, nb_epoch=nb_epoch,
                             verbose=verbose, callbacks=callbacks,
                             val_f=val_f, val_ins=val_ins,
-                            shuffle=shuffle, metrics=metrics)
+                            shuffle=shuffle, metrics=metrics, *args, **kwargs)
         return history
+
+    def train_on_batch(self, data, class_weight={}, sample_weight={}):
+        ins = self._standardize_data(data, sample_weight, class_weight)
+        return self._train(*ins)
 
     def evaluate(self, data, batch_size=128, verbose=0,
                  sample_weight={}, class_weight={}):
