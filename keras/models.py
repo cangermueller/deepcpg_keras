@@ -108,23 +108,23 @@ def standardize_weights(y, sample_weight=None, class_weight=None):
         return np.ones(y.shape[:-1] + (1,))
 
 
-def model_from_yaml(yaml_string, custom_objects={}):
+def model_from_yaml(yaml_string, custom_objects={}, *args, **kwargs):
     '''
         Returns a model generated from a local yaml file,
         which is either created by hand or from to_yaml method of Sequential or Graph
     '''
     import yaml
     config = yaml.load(yaml_string)
-    return model_from_config(config, custom_objects=custom_objects)
+    return model_from_config(config, custom_objects=custom_objects, *args, **kwargs)
 
 
-def model_from_json(json_string, custom_objects={}):
+def model_from_json(json_string, custom_objects={}, *args, **kwargs):
     import json
     config = json.loads(json_string)
-    return model_from_config(config, custom_objects=custom_objects)
+    return model_from_config(config, custom_objects=custom_objects, *args, **kwargs)
 
 
-def model_from_config(config, custom_objects={}):
+def model_from_config(config, custom_objects={}, compile=True):
     model_name = config.get('name')
     if model_name not in {'CpgGraph', 'Graph', 'Sequential'}:
         raise Exception('Unrecognized model:', model_name)
@@ -138,7 +138,7 @@ def model_from_config(config, custom_objects={}):
     elif model_name == 'Sequential':
         model.__class__ = Sequential
 
-    if 'optimizer' in config:
+    if compile and 'optimizer' in config:
         # if it has an optimizer, the model is assumed to be compiled
         loss = config.get('loss')
         class_mode = config.get('class_mode')
