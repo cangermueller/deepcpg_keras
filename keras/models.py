@@ -948,7 +948,6 @@ class CpgGraph(Graph):
                 progbar.update(batch_end)
         return outs
 
-
     def _standardize_data(self, data, sample_weight=None, class_weight=None):
         X = [data[name] for name in self.input_order]
         y = []
