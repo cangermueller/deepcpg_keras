@@ -858,9 +858,9 @@ class CpgGraph(Graph):
         for epoch in range(nb_epoch):
             log('Epoch (%d/%d)' % (epoch + 1, nb_epoch))
             callbacks.on_epoch_begin(epoch)
-            if False or shuffle == 'batch':
+            if shuffle == 'batch':
                 index_array = batch_shuffle(index_array, batch_size)
-            elif False or shuffle:
+            elif shuffle:
                 np.random.shuffle(index_array)
 
             batches = make_batches(nb_train_sample, batch_size)
@@ -878,6 +878,19 @@ class CpgGraph(Graph):
                 except TypeError:
                     raise Exception('TypeError while preparing batch. \
                         If using HDF5 input data, pass shuffle="batch".\n')
+
+                # TODO: remove
+                #  nb_out = len(self.output_order)
+                #  nb_in = len(self.input_order)
+                #  for i in range(nb_out):
+                    #  iy = nb_in + i
+                    #  iw = nb_in + nb_out + i
+                    #  y = ins_batch[iy]
+                    #  w = ins_batch[iw]
+                    #  h = y == -1
+                    #  assert np.all(w[h] == 0)
+                    #  assert np.all(w[~h] == 1)
+
 
                 batch_logs = {}
                 batch_logs['batch'] = batch_index
