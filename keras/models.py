@@ -819,7 +819,6 @@ class CpgGraph(Graph):
             if logger is not None:
                 logger(x)
 
-        shuffle = False
         ymap = dict()
         wmap = dict()
         for i, o in enumerate(self.output_order):
@@ -879,7 +878,7 @@ class CpgGraph(Graph):
                     raise Exception('TypeError while preparing batch. \
                         If using HDF5 input data, pass shuffle="batch".\n')
 
-                # TODO: remove
+                # Check sample weights
                 #  nb_out = len(self.output_order)
                 #  nb_in = len(self.input_order)
                 #  for i in range(nb_out):
@@ -890,7 +889,6 @@ class CpgGraph(Graph):
                     #  h = y == -1
                     #  assert np.all(w[h] == 0)
                     #  assert np.all(w[~h] == 1)
-
 
                 batch_logs = {}
                 batch_logs['batch'] = batch_index
